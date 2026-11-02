@@ -1901,8 +1901,8 @@ end
 end
 if not proxima then aviso("Sem mais sugestões"); break end
 if proxima == palavra or usedWords[proxima] then aviso("Sugestão repetida bloqueada"); break end
--- Só 80 ms adicionais antes de apagar; revalidar em caso de resposta tardia.
-task.wait(0.08)
+-- Só 50 ms adicionais antes de apagar; revalidar em caso de resposta tardia.
+task.wait(0.05)
 if not mesmaRodada() or readSlots(keys) ~= palavra then
 aviso("Campo mudou; confira aceitação"); break
 end
