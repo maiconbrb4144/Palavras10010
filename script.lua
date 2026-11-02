@@ -87,37 +87,23 @@ local bancoEmergenciaEN = {
 }
 local bancoPTCurado = {}
 for _, w in ipairs(bancoEmergenciaPT) do bancoPTCurado[w] = true end
-local finaisDificeis = {"pter", "ack", "eat", "ick", "ny", "om", "ok", "gn", "pt", "ct", "ia", "gh", "ux", "ug", "mn", "ow", "xy", "x"}
-local finaisTrio = {ack = true, eat = true, ick = true}
+local finaisDificeis = {"ing", "cao", "orm", "ny", "om", "ok", "gn", "pt", "ct", "ia", "ux", "ug", "mn", "ow", "ts", "xy", "x"}
+-- O trio é controlado somente pelo botão próprio, não por filtros individuais.
+local finaisTrio = {ing = true, cao = true, orm = true}
 local trioAtivo = false
--- XY começa desligado; o final personalizado começa vazio.
-local finaisDesligados = {xy = true}
-local finaisOff = {"xy"}
-local sufixosOff, tamanhosOff = {xy = true}, {2}
+-- Desligado significa apenas sem prioridade; nunca bloqueia palavras.
+-- CT, OW, TS e XY começam sem prioridade; o personalizado começa vazio.
+local finaisDesligados = {ct = true, ow = true, ts = true, xy = true}
 local finalExtra, extraLigado, botaoExtra, enterExtra = "", false, nil, nil
 local revisaoFiltros = 0
 local botoesFinais = {}
 local function finalPermitido(w, temporario)
-if temporario then return true end
-for _, tamanho in ipairs(tamanhosOff) do
-if #w >= tamanho and sufixosOff[w:sub(-tamanho)] then return false end
-end
+-- Finais desligados são tratados como finais comuns, inclusive na reserva.
 return true
 end
 local function atualizarFinaisDesligados()
+-- Só invalida pesquisas que estavam ordenando com prioridades antigas.
 revisaoFiltros = revisaoFiltros + 1
-finaisOff = {}
-for _, fim in ipairs(finaisDificeis) do
-if finaisDesligados[fim] then finaisOff[#finaisOff+1] = fim end
-end
-if finalExtra ~= "" and not extraLigado then finaisOff[#finaisOff+1] = finalExtra end
-local mapa, tamanhos, vistos = {}, {}, {}
-for _, fim in ipairs(finaisOff) do
-mapa[fim] = true
-local tamanho = #fim
-if not vistos[tamanho] then vistos[tamanho] = true; tamanhos[#tamanhos+1] = tamanho end
-end
-sufixosOff, tamanhosOff = mapa, tamanhos
 end
 local function pintarExtra()
 if not botaoExtra then return end
@@ -142,9 +128,9 @@ local function categoriaFinal(w, idioma, modoEscolhido, trioEscolhido)
 local modo = modoEscolhido or modoFinais
 local usarTrio = trioEscolhido
 if usarTrio == nil then usarTrio = trioAtivo and extrasPermitidos(inputBox and inputBox.Text) end
-if modo == "NENHUM" or not finalPermitido(w) then return 0 end
+if modo == "NENHUM" then return 0 end
 for _, fim in ipairs(finaisDificeis) do
-if #w >= #fim and w:sub(-#fim) == fim
+if not finaisDesligados[fim] and #w >= #fim and w:sub(-#fim) == fim
 and (prefixosDificeis.EN[fim] or prefixosDificeis.PT[fim])
 and (not finaisTrio[fim] or usarTrio)
 and (modo ~= "X" or fim == "x") and (modo ~= "OUTROS" or fim ~= "x") then
@@ -280,7 +266,7 @@ if r1 == 0 and r2 == 0 and r3 == 0 then return math.huge end
 local base2 = r2 > 0 and r2 or (r1 > 0 and r1 or r3)
 local base1 = r1 > 0 and r1 or base2
 local base3 = r3 > 0 and r3 or base2
-return base1 * 0.25 + base2 * 0.50 + base3 * 0.25
+return base1 * 0.10 + base2 * 0.60 + base3 * 0.30
 end
 local function finalPriorizavel(palavra, idioma, modo, trioEscolhido)
 local categoria = categoriaFinal(palavra, idioma, modo, trioEscolhido)
@@ -331,22 +317,19 @@ if (#a >= 4) ~= (#b >= 4) then return #a >= 4 end
 if (pa[3] > 0) ~= (pb[3] > 0) then return pa[3] > 0 end
 if (pa[3] == 3) ~= (pb[3] == 3) then return pa[3] == 3 end
 local ca, cb = palavraCurtaConfiavel(a, idioma), palavraCurtaConfiavel(b, idioma)
-local pterA = pa[3] > 0 and a:sub(-4) == "pter"
-local pterB = pb[3] > 0 and b:sub(-4) == "pter"
 if estrategiaNoMomento then
 -- A estimativa só supera a diferença entre níveis de confiança quando ambas
 -- as palavras têm evidência mínima; dados ausentes nunca significam vitória.
 local seguraA, seguraB = pa[2] >= 2, pb[2] >= 2
 if seguraA ~= seguraB then return seguraA end
 if seguraA then
+if pa[2] ~= pb[2] then return pa[2] > pb[2] end
 if ca ~= cb then return ca end
-if pterA ~= pterB then return pterA end
 if pa[4] ~= pb[4] then return pa[4] < pb[4] end
 end
 end
 if pa[2] ~= pb[2] then return pa[2] > pb[2] end
 if ca ~= cb then return ca end
-if pterA ~= pterB then return pterA end
 if estrategiaNoMomento and pa[4] ~= pb[4] then return pa[4] < pb[4] end
 if pa[3] ~= pb[3] then return pa[3] > pb[3] end
 if #a ~= #b then return #a < #b end
@@ -730,8 +713,8 @@ if loopCounter % 25000 == 0 then progressoBusca = os.clock(); task.wait() end
 end
 end
 end
--- Pesquisa os dois idiomas antes de considerar a reativação dos filtros.
--- A memória de palavras usadas e o prefixo fixo continuam obrigatórios.
+-- Pesquisa ambos os idiomas respeitando a memória e o prefixo fixo.
+-- Finais desligados continuam válidos, sem prioridade especial.
 local function buscarAlternativas(termo, modoAtual, idiomaPreferido, prefixoFixo, temporario)
 prefixoFixo = prefixoFixo or ""
 local curtas, idiomaCurtas, fontesCurtas
@@ -840,11 +823,6 @@ temporario = false
 matches, lingua, fontes = buscarAlternativasEstavel(termo, modoAtual, idioma, prefixoFixo)
 if #matches == 0 and termo ~= "" then
 matches, lingua, fontes = buscarNasReservas(termo, modoAtual, idioma, prefixoFixo, false)
-end
-if #matches == 0 and termo ~= "" and #finaisOff > 0 then
-temporario = true
-matches, lingua, fontes = buscarAlternativasEstavel(termo, modoAtual, idioma, prefixoFixo, true)
-if #matches == 0 then matches, lingua, fontes = buscarNasReservas(termo, modoAtual, idioma, prefixoFixo, true) end
 end
 until revisao == revisaoFiltros and versaoBanco == revisaoBancos
 return matches, lingua, fontes, temporario
@@ -1194,9 +1172,9 @@ index = 1
 updateDisplay()
 end
 end)
-linha("TRIO ACK/EAT/ICK: NÃO", function(b)
+linha("TRIO ING/CAO/ORM: NÃO", function(b)
 trioAtivo = not trioAtivo
-b.Text = "TRIO ACK/EAT/ICK: " .. (trioAtivo and "SIM" or "NÃO")
+b.Text = "TRIO ING/CAO/ORM: " .. (trioAtivo and "SIM" or "NÃO")
 if estado.ocupado then
 pendenteUI = true
 aviso("Trio atualiza após tentativa")
@@ -1230,9 +1208,15 @@ end
 end)
 end
 end
-local filtroBotao = linha("FILTROS DE FINAIS ▼", function(b)
+linha("PALAVRAS 10+: DESLIGADO", function(b)
+modoLongas = not modoLongas
+b.Text = "PALAVRAS 10+: " .. (modoLongas and "LIGADO" or "DESLIGADO")
+if estado.ocupado then pendenteUI = true; aviso("Palavras grandes após tentativa")
+else index = 1; updateDisplay() end
+end)
+local filtroBotao = linha("PRIORIDADE DE FINAIS ▼", function(b)
 filtrosAbertos = not filtrosAbertos
-b.Text = filtrosAbertos and "FILTROS DE FINAIS ▲" or "FILTROS DE FINAIS ▼"
+b.Text = filtrosAbertos and "PRIORIDADE DE FINAIS ▲" or "PRIORIDADE DE FINAIS ▼"
 local grade = painel:FindFirstChild("GradeFinais")
 if grade then grade.Visible = filtrosAbertos end
 atualizarRolagem()
@@ -1245,11 +1229,14 @@ gradeFinais.LayoutOrder = ordemLinhas
 gradeFinais.Size = UDim2.new(1, -6, 0, 80)
 gradeFinais.BackgroundTransparency = 1
 gradeFinais.Visible = false
-for i, fim in ipairs(finaisDificeis) do
+local numeroFiltros = 0
+for _, fim in ipairs(finaisDificeis) do
+if not finaisTrio[fim] then
+numeroFiltros = numeroFiltros + 1
 local botaoFim = Instance.new("TextButton", gradeFinais)
 botaoFim.Name = "Final_" .. fim:upper()
 botoesFinais[fim] = botaoFim
-local coluna, linhaIndice = (i - 1) % 5, math.floor((i - 1) / 5)
+local coluna, linhaIndice = (numeroFiltros - 1) % 5, math.floor((numeroFiltros - 1) / 5)
 if fim == "x" then coluna = 4 end
 botaoFim.Size = UDim2.new(0.2, -2, 0, 18)
 botaoFim.Position = UDim2.new(coluna * 0.2, 1, 0, linhaIndice * 20)
@@ -1266,6 +1253,7 @@ botaoFim.Text = fim:upper() .. (ligado and " ✓" or " ✕")
 botaoFim.BackgroundColor3 = ligado and Color3.fromRGB(18, 78, 65) or Color3.fromRGB(75, 30, 35)
 atualizarFiltroUI()
 end)
+end
 end
 local campoExtra = Instance.new("TextBox", gradeFinais)
 campoExtra.Name = "FinalPersonalizado"
@@ -1305,12 +1293,6 @@ botaoExtra.MouseButton1Click:Connect(function()
 if finalExtra == "" then aviso("Digite um final e aperte Enter"); return end
 extraLigado = not extraLigado
 atualizarFinaisDesligados(); pintarExtra(); atualizarFiltroUI()
-end)
-linha("PALAVRAS 10+: DESLIGADO", function(b)
-modoLongas = not modoLongas
-b.Text = "PALAVRAS 10+: " .. (modoLongas and "LIGADO" or "DESLIGADO")
-if estado.ocupado then pendenteUI = true; aviso("Palavras grandes após tentativa")
-else index = 1; updateDisplay() end
 end)
 atualizarRolagem()
 -- Cada fonte tardia ou com falha é retomada em segundo plano, sem alterar listas em uso.
@@ -1421,7 +1403,8 @@ local reserva, n = {Set = {}, Buckets = {}, pronto = false}, 0
 for linha in item.texto:gmatch("[^\r\n]+") do
 local w = linha:lower()
 if idioma == "PT" then w = w:gsub("[\194-\244][\128-\191]*", function(c) return mapaAcentos[c] or c end) end
-if #w >= 3 and #w <= 18 and w:match("^[a-z]+$") and w:match("[aeiouy]") and not listaNegra[w]
+if #w >= 3 and #w <= 18 and w:match("^[a-z]+$") and w:match("[aeiouy]")
+and not w:match("^xl[ivx]*$") and not w:match("^xk[a-z]*$") and not listaNegra[w]
 and not bancos[idioma].Set[w] and not reserva.Set[w] then
 reserva.Set[w] = true
 local chave = w:sub(1, 2)
@@ -1873,8 +1856,8 @@ end
 proximoIdioma = idiomaResultados
 end
 if not proxima then
--- A lista mostrada pode ter se esgotado; consulte ambos os idiomas antes
--- de desbloquear finais. Nunca apague a memória nem ultrapasse o limite.
+-- A lista mostrada pode ter se esgotado; consulte os dois idiomas e reservas.
+-- Nunca apague a memória nem ultrapasse o limite.
 local novas, novoIdioma, _, temporario = buscarComExcecao(termo, modoBusca, idiomaResultados, prefixoInicial)
 if temporario then aviso("Sem opções; exceção temporária de filtros") end
 if #novas > 0 then
