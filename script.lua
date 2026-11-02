@@ -1707,7 +1707,7 @@ local candidatasPT = nil
 local ultimaEnviada = nil
 local function mesmaRodada()
 local l, k = getParts()
-return UserInputService:GetFocusedTextBox() ~= campoExtra and token == estado.token and l == label and k == keys
+return gui.Parent ~= nil and UserInputService:GetFocusedTextBox() ~= campoExtra and token == estado.token and l == label and k == keys
 and (not originalPrompt or promptText(l) == originalPrompt)
 end
 local function aguardarTexto(esperado, anterior, prazo)
@@ -1730,7 +1730,7 @@ until os.clock() >= ate
 return mesmaRodada() and readSlots(keys) == esperado
 end
 while estado.tentativasRodada < config.maxTentativas do
-if token ~= estado.token or (automatico and not config.automatico) then break end
+if not gui.Parent or token ~= estado.token or (automatico and not config.automatico) then break end
 if (currentRelaxado and currentRevisao ~= revisaoFiltros) or currentRevisaoBancos ~= revisaoBancos then
 local novas, lingua, _, temporario = buscarComExcecao(termo, modoBusca, idiomaResultados, prefixoInicial)
 current, idiomaResultados, index = novas, lingua, 1
@@ -1794,6 +1794,10 @@ if automatico then estado.candidatoRecuperacao = palavra; estado.idiomaRecuperac
 break
 end
 if not config.enter then aviso("Digitada; envie manualmente"); break end
+-- Uma única autorização de Enter por palavra, antes de qualquer pausa.
+-- A mecânica de pressionar/soltar continua igual à versão de 60 KB.
+if not mesmaRodada() or usedWords[palavra] then aviso("Envio repetido ou rodada alterada; parado"); break end
+marcarUsada(palavra)
 if not key(Enum.KeyCode.Return) then
 -- O pressionamento pode ter chegado ao jogo antes de ocorrer a falha.
 -- Memorizar conservadoramente e não tentar outra palavra às cegas.
@@ -1897,6 +1901,11 @@ end
 end
 if not proxima then aviso("Sem mais sugestões"); break end
 if proxima == palavra or usedWords[proxima] then aviso("Sugestão repetida bloqueada"); break end
+-- Só 80 ms adicionais antes de apagar; revalidar em caso de resposta tardia.
+task.wait(0.08)
+if not mesmaRodada() or readSlots(keys) ~= palavra then
+aviso("Campo mudou; confira aceitação"); break
+end
 aviso("Possível rejeição; apagando")
 local limpa = false
 local limiteApagar = modoLongas and 18 or 14
@@ -1949,7 +1958,7 @@ while config.automatico and tokenAgendado == estado.token and geracaoAgendada ==
 and inputBox.Text:lower() == letra and (ultimoTermoPesquisado ~= letra or estado.ocupado)
 and os.clock() < limite do task.wait(0.1) end
 local atualLabel, atualKeys = getParts()
-if not config.automatico or tokenAgendado ~= estado.token or geracaoAgendada ~= estado.geracao then return end
+if not gui.Parent or not config.automatico or tokenAgendado ~= estado.token or geracaoAgendada ~= estado.geracao then return end
 if inputBox.Text:lower() ~= letra or atualLabel ~= label or atualKeys ~= keys then return end
 if ultimoTermoPesquisado ~= letra or estado.ocupado then
 estado.rodada = nil
@@ -1981,7 +1990,7 @@ local tokenRec = estado.token
 local geracaoRec = estado.geracao
 task.delay(0.6, function()
 local l, k = getParts()
-if config.automatico and not estado.ocupado and tokenRec == estado.token
+if gui.Parent and config.automatico and not estado.ocupado and tokenRec == estado.token
 and geracaoRec == estado.geracao and l == label and k == keys
 and readSlots(keys) == campo and not usedWords[candidato]
 and ultimoTermoPesquisado == letra then
