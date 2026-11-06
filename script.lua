@@ -1136,6 +1136,8 @@ task.wait(0.075)
 if currentToken == searchToken then index = 1; updateDisplay() end
 end)
 prevBtn.MouseButton1Click:Connect(function()
+-- A palavra exibida deve continuar sendo a que está sendo digitada.
+if estado and estado.ocupado then return end
 if #current == 0 then return end
 index = ((index - 2) % #current) + 1
 sugestaoExibida = current[index]
@@ -1144,6 +1146,8 @@ wordLabel.Text = current[index]:upper()
 infoLabel.Text = index .. " / " .. #current .. " (" .. (idiomaResultados == "PT" and "Português" or "Inglês") .. ")"
 end)
 nextBtn.MouseButton1Click:Connect(function()
+-- A palavra exibida deve continuar sendo a que está sendo digitada.
+if estado and estado.ocupado then return end
 if #current == 0 then return end
 index = index % #current + 1
 sugestaoExibida = current[index]
@@ -1216,6 +1220,7 @@ local bloqueiosSeguranca = {
 }
 local function liberarConferencia()
 estado.bloqueioSeguranca = nil
+estado.envioComFalha = false
 estado.status = ""
 end
 local function aviso(t)
@@ -1639,11 +1644,15 @@ end
 end
 index = math.min(math.max(index, 1), math.max(#current, 1))
 countLabel.Text = #current .. " disp."
+-- Durante a tentativa, mantenha visível a palavra que acabou de ser enviada.
+-- A lista será atualizada quando a operação terminar.
+if estado.ocupado then pendenteUI = true; return end
 sugestaoExibida = current[index]
 wordLabel.Text = current[index] and current[index]:upper() or "sem palavras"
 infoLabel.Text = current[index] and (index .. " / " .. #current) or "Nenhuma sugestão disponível"
 end
 local function interromperPorEnterManual()
+estado.envioComFalha = true
 -- Bloqueie antes de consultar a interface: mesmo uma falha nessa leitura
 -- não pode autorizar a continuação após um Enter possivelmente recebido.
 estado.token = estado.token + 1
@@ -1671,12 +1680,14 @@ if ok and texto == nil then ok, texto = false, "slots indisponíveis" end
 -- Mesmo se a interface falhar, o Enter pode ter chegado ao jogo.
 estado.tentativasRodada = math.min(config.maxTentativas, estado.tentativasRodada + 1)
 if not ok then
+estado.envioComFalha = true
 aviso("Resposta incerta; parado")
 warn("Word System: falha ao conferir Enter manual:", texto)
 return
 end
 local salvo, erro = pcall(memorizarEnvio, texto)
 if not salvo then
+estado.envioComFalha = true
 aviso("Resposta incerta; parado")
 warn("Word System: falha ao memorizar Enter manual:", erro)
 return
@@ -1717,6 +1728,7 @@ else
 estado.token = estado.token + 1
 estado.tentativasRodada = math.min(config.maxTentativas, estado.tentativasRodada + 1)
 estado.recuperavel = false
+estado.envioComFalha = true
 aviso("Resposta incerta; parado")
 end
 warn("Word System: falha ao conferir foco:", foco)
@@ -1998,9 +2010,9 @@ end
 
 local function runWord(automatico)
 if estado.ocupado then return end
--- A navegação escolhe apenas a primeira palavra de um início manual; o
--- automático contínuo preserva o plano normal de cinco tentativas.
-local escolhaManual = not automatico and selecaoManual and sugestaoExibida or nil
+-- Se o jogador navegou, comece pela palavra exibida também no automático;
+-- as tentativas seguintes continuam seguindo o plano de cinco fases.
+local escolhaManual = selecaoManual and sugestaoExibida or nil
 local idiomaManual, revManual, bancosManual = idiomaResultados, revisaoFiltros, revisaoBancos
 local geracaoManual, buscaManual = geracaoPesquisa, modoBusca
 selecaoManual = false
@@ -2161,6 +2173,7 @@ if not key(Enum.KeyCode.Return) then
 -- Memorizar conservadoramente e não tentar outra palavra às cegas.
 memorizarEnvio(palavra)
 estado.recuperavel = false
+estado.envioComFalha = true
 aviso("Resposta incerta; parado")
 break
 end
@@ -2346,7 +2359,8 @@ local label, keys = getParts()
 local sinal = label and keys and detect(label, keys) or nil
 local termo = sinal or (inputBox.Text or ""):lower():gsub("%s", "")
 if termo == "" then aviso("Sem início para revisar"); return end
-if sinal and not promptText(label) then ultimaSinalMonitor = sinal end
+-- Não atualizar o sinal do monitor aqui: ele ainda precisa reconhecer uma
+-- rodada diferente e ajustar a contagem, inclusive sem prompt explícito.
 liberarConferencia()
 estado.geracao = estado.geracao + 1
 estado.rodada = nil
@@ -2423,41 +2437,20 @@ estado.recuperacoes = 0
 aviso("Inativo: conferindo para continuar")
 tentarRecuperacao(letra, label, keys)
 end
+-- Detecção de sinais da Bomb original: só ignora palavra já enviada que
+-- ainda esteja visível nos slots; não bloqueia toda mudança sem prompt.
 local function preservarSinalAnterior(letra, ultima, label)
--- Se não há texto explícito de desafio, uma palavra já enviada que ainda
--- aparece nos slots não comprova que começou outra rodada.
-if not promptText(label) and not ultima and letra and estado.tentativasRodada > 0 then
--- Após perder a interface não é possível saber se os slots são desafio ou resposta.
-if not exigeConferencia() then
-estado.token = estado.token + 1
-estado.recuperavel = false
-aviso("Sinal incerto; confira rodada")
-end
-return letra
-end
 if not promptText(label) and ultima then
--- Com envios já contados, uma mudança pode ser digitação manual ou resto
--- de uma palavra, não prova de rodada nova. Não zerar o contador às cegas.
-if letra and letra ~= ultima and estado.tentativasRodada > 0 then
-local parcial = estado.candidatoRecuperacao
--- Uma continuação conhecida da palavra interrompida pode ser recuperada.
-if estado.recuperavel and parcial and #letra > #ultima
-and letra:sub(1, #ultima) == ultima and parcial:sub(1, #letra) == letra then return ultima end
-if not exigeConferencia() then
-estado.token = estado.token + 1
-estado.recuperavel = false
-aviso("Sinal incerto; confira rodada")
-end
-return ultima
-end
-if exigeConferencia() or (letra and letra ~= ultima and usedWords[letra]) then return ultima end
+-- Só preserve o sinal na situação específica de apagamento não confirmado:
+-- os slots podem conter uma palavra parcialmente apagada, não um desafio.
+local bloqueio = estado.bloqueioSeguranca or estado.status
+if estado.envioComFalha or bloqueio == "Apagar não confirmado; parado" or bloqueio == "Campo mudou; parado" then return ultima end
+if letra and letra ~= ultima and usedWords[letra] then return ultima end
 end
 return letra
 end
-task.spawn(function()
-while gui.Parent do
-task.wait(0.15)
-if not estado.ocupado then
+local sinalAntesDaAusencia = nil
+local function monitorarRodada()
 local label, keys = getParts()
 if label and keys then
 local letra = preservarSinalAnterior(detect(label, keys), ultimaSinalMonitor, label)
@@ -2466,23 +2459,27 @@ if estado.recuperavel and not promptText(label) and ultimaSinalMonitor and letra
 and #letra > #ultimaSinalMonitor and letra:sub(1, #ultimaSinalMonitor) == ultimaSinalMonitor
 and parcial:sub(1, #letra) == letra then letra = ultimaSinalMonitor end
 if not letra and ultimaSinalMonitor then
+sinalAntesDaAusencia = ultimaSinalMonitor
 ultimaSinalMonitor = nil
 estado.geracao = estado.geracao + 1
 estado.rodada = nil
 end
 if letra and letra ~= ultimaSinalMonitor then
--- Um sinal comprovadamente diferente é uma nova rodada. Se o sinal anterior
--- se perdeu, não presumir isso apenas para cancelar uma parada de segurança.
+-- Publique o sinal antes de concluir a transição; se escrever no painel
+-- falhar, o monitor tenta novamente sem dar o sinal como já processado.
+if inputBox.Text ~= letra then inputBox.Text = letra end
+-- Como na Bomb, um sinal diferente nos slots é tratado como outra rodada.
+-- Após ausência temporária, o mesmo sinal não prova uma rodada nova.
 local novaComprovada = ultimaSinalMonitor ~= nil
+or (sinalAntesDaAusencia ~= nil and sinalAntesDaAusencia ~= letra)
 if novaComprovada and exigeConferencia() then liberarConferencia(); aviso("Nova rodada detectada") end
 estado.geracao = estado.geracao + 1
 ultimaSinalMonitor = letra
--- Uma primeira leitura após perda da interface não apaga envios detectados.
+sinalAntesDaAusencia = nil
 if novaComprovada or estado.tentativasRodada == 0 then
 estado.inglesRejeitadas = 0; estado.portuguesAteFim = false; estado.errosDificeis = 0; estado.finaisSuspensos = false; estado.tentativasRodada = 0; estado.recuperavel = false; estado.recuperacoes = 0; estado.candidatoRecuperacao = nil; estado.idiomaRecuperacao = nil
 end
 estado.rodada = nil
-inputBox.Text = letra
 end
 tentarRecuperacao(letra, label, keys)
 verificarInatividade(letra, label, keys)
@@ -2491,8 +2488,27 @@ estado.rodada = letra
 agendarAutomatico(letra, label, keys)
 end
 else
-if ultimaSinalMonitor then estado.geracao = estado.geracao + 1 end
+if ultimaSinalMonitor then
+sinalAntesDaAusencia = ultimaSinalMonitor
+estado.geracao = estado.geracao + 1
+end
 ultimaSinalMonitor = nil; estado.rodada = nil
+end
+end
+task.spawn(function()
+while gui.Parent do
+task.wait(0.15)
+if not estado.ocupado then
+local ok, erro = pcall(monitorarRodada)
+if not ok then
+-- Erros transitórios não podem matar o monitor permanentemente.
+estado.token = estado.token + 1
+estado.rodada = nil
+aviso("Monitor aguardando interface")
+warn("Word System: erro no monitor; tentando novamente:", erro)
+task.wait(0.85)
+elseif estado.status == "Monitor aguardando interface" then
+aviso("Monitor recuperado")
 end
 end
 end
