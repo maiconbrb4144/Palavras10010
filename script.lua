@@ -1,6 +1,7 @@
 -- Word System — revisão.
 -- As conexões nos serviços globais precisam ser removidas ao fechar ou falhar.
 local conexoesGlobais = {}
+local conexaoValidacao = nil
 local downloadsAtivos = {}
 local guiInicializando
 local function cancelarDownloads()
@@ -10,7 +11,11 @@ if item.thread then pcall(task.cancel, item.thread) end
 downloadsAtivos[item] = nil
 end
 end
+local function desconectarValidacao()
+if conexaoValidacao then pcall(function() conexaoValidacao:Disconnect() end); conexaoValidacao = nil end
+end
 local function desconectarGlobais()
+desconectarValidacao()
 for _, conexao in ipairs(conexoesGlobais) do pcall(function() conexao:Disconnect() end) end
 table.clear(conexoesGlobais)
 end
@@ -863,6 +868,7 @@ until revisao == revisaoFiltros and versaoBanco == revisaoBancos
 return matches, lingua, fontes, temporario
 end
 local selecionarTentativa, estado, getParts, readSlots, promptText
+local ultimaSinalMonitor, sinalFicouVazio = nil, false
 local geracaoPesquisa = 0
 local function updateDisplay()
 sugestaoExibida = nil
@@ -1635,6 +1641,7 @@ return ok
 end
 local function memorizarEnvio(palavra)
 if not palavra or #palavra < 2 or not palavra:match("^[a-z]+$") then return end
+estado.ultimaPalavraEnviada = palavra
 marcarUsada(palavra)
 for i = #current, 1, -1 do
 if current[i] == palavra then
@@ -1699,6 +1706,7 @@ if estado.ocupado then aviso("Aguarde a tentativa atual para resetar"); return e
 liberarConferencia()
 estado.token = estado.token + 1
 estado.inglesRejeitadas = 0; estado.portuguesAteFim = false; estado.errosDificeis = 0; estado.finaisSuspensos = false; estado.tentativasRodada = 0; estado.recuperavel = false; estado.recuperacoes = 0; estado.candidatoRecuperacao = nil; estado.idiomaRecuperacao = nil
+estado.ultimaPalavraEnviada = nil
 usedWords = {}
 prefixosUsados = novosMapas()
 index = 1
@@ -1874,7 +1882,6 @@ end
 -- Evidência adicional, não é lista oficial nem garante aceitação.
 -- wordfreq 3.1.1 (Apache-2.0), https://github.com/rspeer/wordfreq
 local frequenciaIndependente = {EN = {}, PT = {}}
--- Lista compactada por prefixo comum, sem perder nenhuma palavra.
 local function carregarFrequencias(idioma, dados)
 local anterior=""
 for n, final in dados:gmatch("(%d+)([a-z]+)") do
@@ -2168,7 +2175,27 @@ marcarUsada(palavra)
 -- ou falha depois de o jogo poder ter recebido a tecla.
 estado.tentativasRodada = estado.tentativasRodada + 1
 estado.ultimoEnterVirtual = os.clock()
+-- Vigiar somente a validação do Enter: a própria rotina de Backspace não
+-- participa desta captura. O evento complementa a leitura periódica.
+local viuCampoVazio = false
+local observandoValidacao = true
+local primeiro = keys:FindFirstChild("1")
+local primeiroInner = primeiro and primeiro:FindFirstChild("Inner")
+local primeiraLetra = primeiro and ((primeiroInner and primeiroInner:FindFirstChild("TextLabel")) or primeiro:FindFirstChild("TextLabel"))
+desconectarValidacao()
+if primeiraLetra and primeiraLetra:IsA("TextLabel") then
+local okConexao, conexao = pcall(function()
+return primeiraLetra:GetPropertyChangedSignal("Text"):Connect(function()
+if not observandoValidacao or not gui.Parent or token ~= estado.token then return end
+local okLeitura, campo = pcall(readSlots, keys)
+if okLeitura and campo == "" then viuCampoVazio = true end
+end)
+end)
+if okConexao then conexaoValidacao = conexao end
+end
 if not key(Enum.KeyCode.Return) then
+observandoValidacao = false
+desconectarValidacao()
 -- O pressionamento pode ter chegado ao jogo antes de ocorrer a falha.
 -- Memorizar conservadoramente e não tentar outra palavra às cegas.
 memorizarEnvio(palavra)
@@ -2192,11 +2219,16 @@ resultado = "incerto"; break
 end
 local agora, novoPrompt = readSlots(keys), promptText(novaLabel)
 if agora == nil then resultado = "incerto"; break end
-if agora == "" or (originalPrompt and novoPrompt and novoPrompt ~= originalPrompt) then
+if agora == "" or viuCampoVazio or (originalPrompt and novoPrompt and novoPrompt ~= originalPrompt) then
+-- O monitor não roda enquanto há digitação/validação. Preserve o vazio
+-- observado aqui, inclusive se a nova rodada já tiver a mesma letra.
+if agora == "" or viuCampoVazio then sinalFicouVazio = true end
 resultado = "mudou"; break
 end
 if agora ~= palavra then resultado = "incerto"; break end
 end
+observandoValidacao = false
+desconectarValidacao()
 if resultado == "cancelado" then
 aviso("Resposta incerta; parado")
 estado.recuperavel = false
@@ -2263,6 +2295,7 @@ estado.ocupado = false
 end
 local function executarComSeguranca(automatico)
 local ok, err = pcall(runWord, automatico)
+desconectarValidacao()
 if not ok then
 estado.ocupado = false
 aviso("Erro na automação; interrompida")
@@ -2296,7 +2329,12 @@ and inputBox.Text:lower() == letra and (ultimoTermoPesquisado ~= letra or estado
 and os.clock() < limite do task.wait(0.1) end
 local atualLabel, atualKeys = getParts()
 if not gui.Parent or not config.automatico or exigeConferencia() or tokenAgendado ~= estado.token or geracaoAgendada ~= estado.geracao then return end
-if inputBox.Text:lower() ~= letra or atualLabel ~= label or atualKeys ~= keys then return end
+if inputBox.Text:lower() ~= letra or atualLabel ~= label or atualKeys ~= keys then
+-- A interface pode ser reconstruída sem trocar o desafio. Não deixe o
+-- agendamento antigo impedir o monitor de marcar outra tentativa.
+if estado.rodada == letra then estado.rodada = nil end
+return
+end
 if ultimoTermoPesquisado ~= letra or estado.ocupado then
 estado.rodada = nil
 aviso("Aguardando pesquisa")
@@ -2306,6 +2344,7 @@ local prompt = promptText(atualLabel)
 local slots = readSlots(atualKeys)
 local sinal = prompt or (slots and #slots <= 18 and slots or nil)
 if sinal ~= letra then
+if estado.rodada == letra then estado.rodada = nil end
 aviso("Sinal mudou; aguardando rodada")
 return
 end
@@ -2352,7 +2391,6 @@ end
 end
 end
 -- Compartilhado com o monitor para que VER confirme também sinais sem prompt.
-local ultimaSinalMonitor = nil
 revisarBtn.MouseButton1Click:Connect(function()
 if estado.ocupado then aviso("Aguarde a tentativa atual"); return end
 local label, keys = getParts()
@@ -2437,19 +2475,20 @@ estado.recuperacoes = 0
 aviso("Inativo: conferindo para continuar")
 tentarRecuperacao(letra, label, keys)
 end
--- Detecção de sinais da Bomb original: só ignora palavra já enviada que
--- ainda esteja visível nos slots; não bloqueia toda mudança sem prompt.
+-- Base Bomb: palavras já enviadas não viram um novo desafio. Preserve também
+-- parciais após interrupção ou apagamento incerto, mas não esconda campo vazio.
 local function preservarSinalAnterior(letra, ultima, label)
-if not promptText(label) and ultima then
--- Só preserve o sinal na situação específica de apagamento não confirmado:
--- os slots podem conter uma palavra parcialmente apagada, não um desafio.
+if not promptText(label) and ultima and letra then
 local bloqueio = estado.bloqueioSeguranca or estado.status
 if estado.envioComFalha or bloqueio == "Apagar não confirmado; parado" or bloqueio == "Campo mudou; parado" then return ultima end
-if letra and letra ~= ultima and usedWords[letra] then return ultima end
+-- Uma sequência de desafio também pode ser uma palavra usada no passado.
+-- Se a validação já observou o campo mudar, não bloqueie a sequência só por
+-- constar da memória; sem esse evento, preserve a defesa contra texto enviado.
+if letra ~= ultima and usedWords[letra]
+and (bloqueio ~= "Campo mudou; confira aceitação" or letra == estado.ultimaPalavraEnviada) then return ultima end
 end
 return letra
 end
-local sinalAntesDaAusencia = nil
 local function monitorarRodada()
 local label, keys = getParts()
 if label and keys then
@@ -2459,26 +2498,31 @@ if estado.recuperavel and not promptText(label) and ultimaSinalMonitor and letra
 and #letra > #ultimaSinalMonitor and letra:sub(1, #ultimaSinalMonitor) == ultimaSinalMonitor
 and parcial:sub(1, #letra) == letra then letra = ultimaSinalMonitor end
 if not letra and ultimaSinalMonitor then
-sinalAntesDaAusencia = ultimaSinalMonitor
+-- Uma leitura vazia pode separar rodadas idênticas; interface ausente ou
+-- ilegível não é equivalente a um campo que foi lido e está vazio.
+sinalFicouVazio = readSlots(keys) == ""
 ultimaSinalMonitor = nil
 estado.geracao = estado.geracao + 1
 estado.rodada = nil
 end
-if letra and letra ~= ultimaSinalMonitor then
--- Publique o sinal antes de concluir a transição; se escrever no painel
--- falhar, o monitor tenta novamente sem dar o sinal como já processado.
-if inputBox.Text ~= letra then inputBox.Text = letra end
--- Como na Bomb, um sinal diferente nos slots é tratado como outra rodada.
--- Após ausência temporária, o mesmo sinal não prova uma rodada nova.
-local novaComprovada = ultimaSinalMonitor ~= nil
-or (sinalAntesDaAusencia ~= nil and sinalAntesDaAusencia ~= letra)
-if novaComprovada and exigeConferencia() then liberarConferencia(); aviso("Nova rodada detectada") end
+if letra and (letra ~= ultimaSinalMonitor or sinalFicouVazio) then
+-- A mesma letra pode retornar após o campo esvaziar. Nesse caso alterar
+-- Text não dispara evento, mas a prévia precisa refletir a nova tentativa 1.
+local textoJaIgual = inputBox.Text == letra
+-- Publicar primeiro permite repetir a leitura se o painel falhar.
+if not textoJaIgual then inputBox.Text = letra end
+-- Como na Bomb, um sinal retornando após campo vazio pode ser nova rodada,
+-- inclusive se for idêntico. Primeira leitura e sumiço da interface isolado
+-- não apagam tentativas preexistentes; não existe leitura autoritativa de vida.
+local novaRodada = ultimaSinalMonitor ~= nil or sinalFicouVazio
+if novaRodada and exigeConferencia() then liberarConferencia(); aviso("Nova rodada detectada") end
 estado.geracao = estado.geracao + 1
-ultimaSinalMonitor = letra
-sinalAntesDaAusencia = nil
-if novaComprovada or estado.tentativasRodada == 0 then
+if novaRodada or estado.tentativasRodada == 0 then
 estado.inglesRejeitadas = 0; estado.portuguesAteFim = false; estado.errosDificeis = 0; estado.finaisSuspensos = false; estado.tentativasRodada = 0; estado.recuperavel = false; estado.recuperacoes = 0; estado.candidatoRecuperacao = nil; estado.idiomaRecuperacao = nil
 end
+if textoJaIgual and novaRodada then index = 1; updateDisplay() end
+ultimaSinalMonitor = letra
+sinalFicouVazio = false
 estado.rodada = nil
 end
 tentarRecuperacao(letra, label, keys)
@@ -2488,11 +2532,8 @@ estado.rodada = letra
 agendarAutomatico(letra, label, keys)
 end
 else
-if ultimaSinalMonitor then
-sinalAntesDaAusencia = ultimaSinalMonitor
-estado.geracao = estado.geracao + 1
-end
-ultimaSinalMonitor = nil; estado.rodada = nil
+if ultimaSinalMonitor then estado.geracao = estado.geracao + 1 end
+ultimaSinalMonitor = nil; sinalFicouVazio = false; estado.rodada = nil
 end
 end
 task.spawn(function()
@@ -2501,7 +2542,6 @@ task.wait(0.15)
 if not estado.ocupado then
 local ok, erro = pcall(monitorarRodada)
 if not ok then
--- Erros transitórios não podem matar o monitor permanentemente.
 estado.token = estado.token + 1
 estado.rodada = nil
 aviso("Monitor aguardando interface")
